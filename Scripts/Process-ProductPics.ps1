@@ -972,7 +972,7 @@ function Remove-ImageBackgroundSingle {
     }
 }
 
-function Process-ImageFile {
+function Invoke-ImageFile {
     <#
     .SYNOPSIS
         Full pipeline: background removal -> post-processing -> SEO naming.
@@ -1093,7 +1093,7 @@ function Process-ImageFile {
     }
 }
 
-function Process-ImageFolder {
+function Invoke-ImageFolder {
     <#
     .SYNOPSIS
         Processes all images in a folder.
@@ -1160,7 +1160,7 @@ function Process-ImageFolder {
             $relativePath = $imageFile.DirectoryName.Replace($InputFolder, "").TrimStart('\', '/')
         }
 
-        Process-ImageFile -InputFile $imageFile.FullName `
+        Invoke-ImageFile -InputFile $imageFile.FullName `
             -OutputFolder $OutputFolder `
             -RelativePath $relativePath `
             -ModelName $ModelName `
@@ -1373,7 +1373,7 @@ function Start-ImageWatcher {
             Write-LogMessage "Processing $($existingImages.Count) existing image(s)..." -Level Info
 
             foreach ($image in $existingImages) {
-                Process-ImageFile -InputFile $image.FullName `
+                Invoke-ImageFile -InputFile $image.FullName `
                     -OutputFolder $OutputFolder `
                     -ModelName $ModelName `
                     -UseAlphaMatting:$UseAlphaMatting
@@ -1572,7 +1572,7 @@ elseif (Test-Path $InputPath -PathType Leaf) {
         New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
     }
 
-    Process-ImageFile -InputFile $InputPath `
+    Invoke-ImageFile -InputFile $InputPath `
         -OutputFolder $OutputPath `
         -ModelName $Model `
         -UseAlphaMatting:$AlphaMatting
@@ -1582,7 +1582,7 @@ elseif (Test-Path $InputPath -PathType Leaf) {
 }
 # Handle folder
 else {
-    Process-ImageFolder -InputFolder $InputPath `
+    Invoke-ImageFolder -InputFolder $InputPath `
         -OutputFolder $OutputPath `
         -ModelName $Model `
         -UseAlphaMatting:$AlphaMatting `
