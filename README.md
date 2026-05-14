@@ -67,7 +67,8 @@ product-image-prep-toolkit/
 ├── scripts/
 │   ├── Process-ProductPics.ps1       # Main PowerShell script
 │   ├── postprocess_image.py          # Companion Python post-processing script
-│   └── seo-mapping-template.csv      # Template for batch SEO naming
+│   ├── seo-mapping-template.csv      # Template for batch SEO naming during processing
+│   └── seo-rename-template.csv       # Template for standalone SEO rename mode
 │
 ├── examples/                          # Example images and usage demos
 │
@@ -131,9 +132,18 @@ Runs automatically after background removal. The defaults are tuned for product 
 
 ### Green Screen Spill Removal
 
-When shooting products on a green screen, the edges of the product often pick up a green tint ("spill" or "fringing"). The script detects pixels where the green channel dominates and suppresses the excess proportionally — strongest where the spill is most visible, tapering off on neutral areas.
+When shooting products on a green screen, the edges of the product often pick up a green tint ("spill" or "fringing"). This is especially problematic on dark products like rubber, black plastic, and dark metal where the absolute color differences are tiny but the green cast is still visually obvious.
 
-This replicates the Canva technique of selecting the spill color under Color Edit and setting Hue, Saturation, and Brightness all to -100, but fully automated.
+The script uses a **4-pass approach** to eliminate spill:
+
+1. **Absolute excess** (threshold of 2) — catches obvious green dominance, tuned low enough for dark products
+2. **Ratio-based detection** — for pixels darker than 80 luminance, uses proportional comparison instead of absolute, catching subtle spill the first pass misses
+3. **Edge desaturation** — within 16px of the product boundary, desaturates any remaining color cast toward neutral gray
+4. **Hard edge clamp** — at the outermost product boundary pixels, forces the spill channel down if it still exceeds the average of the other two channels
+
+Edge proximity is calculated using SciPy binary erosion, so corrections are strongest at the product outline (where spill concentrates) and gentler in the interior to avoid over-correcting legitimately colored surfaces.
+
+The algorithm also automatically detects whether the image has real transparency (alpha varies) or a solid background (alpha=255 everywhere, background is black), and adjusts its edge detection accordingly.
 
 Also supports `-SpillColor blue` and `-SpillColor red` for other chroma key setups. Use `-SpillColor none` to skip spill removal while keeping other adjustments.
 
@@ -192,6 +202,34 @@ DSC_1001.jpg,trailer-hitch-heavy-duty,jt-custom,product-photo
 
 If you don't pass `-SEOName` or `-SEOMappingFile`, the original filename is used with a `.png` extension.
 
+### Standalone SEO Rename Mode
+
+Already have processed images and just need to rename them with SEO filenames and alt text? Use rename mode — no background removal or post-processing, just fast copy-and-rename from a CSV:
+
+```powershell
+# Basic rename from CSV
+.\scripts\Process-ProductPics.ps1 -RenameCSV "C:\Photos\seo-names.csv" `
+    -RenameInputPath "C:\Photos\Transparent"
+# Output goes to C:\Photos\Transparent\SEO-Renamed\
+
+# Rename with custom output folder and embedded alt text
+.\scripts\Process-ProductPics.ps1 -RenameCSV "C:\Photos\seo-names.csv" `
+    -RenameInputPath "C:\Photos\Transparent" `
+    -RenameOutputPath "C:\Photos\Ready" `
+    -EmbedAltText
+```
+
+**CSV format** (see [`scripts/seo-rename-template.csv`](scripts/seo-rename-template.csv)):
+
+```csv
+SourceFileName,SEOFileName,AltText
+IMG_0001.png,check-valve-2-inch-abs-transparent.png,2 inch ABS check valve for plumbing
+IMG_0002.png,rubber-weather-stripping-door-seal.png,Automotive rubber weather stripping door seal
+IMG_0003.png,push-retainer-clip-nylon-black.png,Black nylon push retainer clip for door panels
+```
+
+The `-EmbedAltText` switch writes the alt text as PNG tEXt metadata (Alt, Description, and Comment chunks). This helps with accessibility and some e-commerce platforms that read embedded image metadata. Requires Python and Pillow; only applies to `.png` files.
+
 ### File Watcher Mode
 
 Drop images into a watched folder and they're automatically processed:
@@ -234,6 +272,10 @@ Processed source images are automatically moved to a `Processed` subfolder (disa
 | `-SEOPrefix` | String | — | Prefix before SEO name |
 | `-SEOSuffix` | String | — | Suffix after SEO name |
 | `-SEOMappingFile` | String | — | CSV file for batch SEO naming |
+| `-RenameCSV` | String | — | CSV file for standalone rename mode (no processing) |
+| `-RenameInputPath` | String | — | Source folder for rename mode |
+| `-RenameOutputPath` | String | Auto | Output folder for rename mode (default: SEO-Renamed subfolder) |
+| `-EmbedAltText` | Switch | Off | Embed alt text from CSV as PNG metadata |
 | `-LogPath` | String | Auto | Custom log file path |
 | `-ReportPath` | String | Auto | Custom CSV report path |
 
@@ -249,6 +291,7 @@ JPG, JPEG, PNG, WEBP, BMP, TIFF
 - **rembg** — installed via `-InstallRembg`
 - **Pillow** — installed via `-InstallRembg`
 - **NumPy** — installed via `-InstallRembg`
+- **SciPy** — installed via `-InstallRembg` (used for edge-proximity spill detection)
 
 ## Troubleshooting
 

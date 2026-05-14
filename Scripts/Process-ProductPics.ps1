@@ -9,12 +9,23 @@
     file watcher mode for automated processing of new images. Output images are saved as
     transparent PNGs ready for WooCommerce and eBay upload.
 
+    Version 2.1 adds:
+    - Advanced 4-pass spill removal that handles dark products (rubber, black plastic,
+      dark metal) where the original single-pass approach missed subtle green fringe
+    - Edge-proximity weighting using SciPy so corrections are strongest at product
+      boundaries where spill is concentrated
+    - Automatic detection of solid-background vs transparent images — works correctly
+      whether rembg outputs true transparency or a solid black background
+    - SciPy added as a dependency for edge erosion calculations
+    - Pillow 14 forward compatibility
+
     Version 2.0 adds:
     - Post-processing pipeline: brightness, contrast, shadow adjustment, and color
       spill removal (green/blue/red screen fringing) using a companion Python script
     - SEO-friendly file naming for e-commerce platforms (hyphens, lowercase, keywords)
     - CSV-based product naming via a mapping file for batch SEO renaming
-    - Pillow dependency management alongside rembg
+    - Metadata stripping (EXIF, GPS, ICC profiles, PNG text chunks)
+    - Pillow and NumPy dependency management alongside rembg
 
     After processing, source images are moved to a "Processed" subfolder and a detailed
     CSV report is generated for tracking purposes.
@@ -99,6 +110,26 @@
     CSV format: SourceFileName,SEOName,SEOPrefix,SEOSuffix
     Example row: IMG_0001.jpg,check-valve-2-inch,jt-custom,transparent
 
+.PARAMETER RenameCSV
+    Path to a CSV file for standalone SEO rename mode. This mode does NOT process
+    images (no background removal or post-processing). It simply copies and renames
+    files according to the CSV mapping and optionally embeds alt text metadata.
+    CSV format: SourceFileName,SEOFileName,AltText
+    Example row: IMG_0001.png,check-valve-2-inch-abs-transparent.png,2 inch ABS check valve
+
+.PARAMETER RenameInputPath
+    Path to the folder containing source images for rename mode.
+
+.PARAMETER RenameOutputPath
+    Path to the output folder for renamed images. Defaults to a "SEO-Renamed"
+    subfolder inside RenameInputPath if not specified.
+
+.PARAMETER EmbedAltText
+    When used with -RenameCSV, embeds the AltText value from the CSV as PNG
+    tEXt metadata (Alt, Description, and Comment chunks). Requires Python and
+    Pillow. Only applies to .png files; other formats are renamed without
+    alt text embedding.
+
 .PARAMETER LogPath
     Path for the log file. Defaults to InputPath\BackgroundRemoval.log
 
@@ -106,47 +137,57 @@
     Path for the CSV report. Defaults to InputPath\BackgroundRemoval-Report.csv
 
 .EXAMPLE
-    .\Remove-ImageBackground.ps1 -InputPath "C:\Photos\Products" -OutputPath "C:\Photos\Transparent"
+    .\Process-ProductPics.ps1 -RenameCSV "C:\Photos\seo-names.csv" -RenameInputPath "C:\Photos\Transparent"
+    Standalone SEO rename: copies and renames images per the CSV mapping to a
+    "SEO-Renamed" subfolder. No image processing is performed.
+
+.EXAMPLE
+    .\Process-ProductPics.ps1 -RenameCSV "C:\Photos\seo-names.csv" -RenameInputPath "C:\Photos\Transparent" -RenameOutputPath "C:\Photos\Ready" -EmbedAltText
+    Renames images AND embeds alt text as PNG metadata for accessibility and SEO.
+
+.EXAMPLE
+    .\Process-ProductPics.ps1 -InputPath "C:\Photos\Products" -OutputPath "C:\Photos\Transparent"
     Processes all images with default post-processing (brightness, contrast, shadows,
     green spill removal). Moves originals to Products\Processed, generates report.
 
 .EXAMPLE
-    .\Remove-ImageBackground.ps1 -InputPath "C:\Photos\Products" -OutputPath "C:\Photos\Transparent" -NoPostProcess
+    .\Process-ProductPics.ps1 -InputPath "C:\Photos\Products" -OutputPath "C:\Photos\Transparent" -NoPostProcess
     Processes all images with background removal only, no color correction.
 
 .EXAMPLE
-    .\Remove-ImageBackground.ps1 -InputPath "C:\Photos\valve.jpg" -OutputPath "C:\Photos\Ready" -SEOName "check valve 2 inch" -SEOPrefix "jt-custom" -SEOSuffix "transparent"
+    .\Process-ProductPics.ps1 -InputPath "C:\Photos\valve.jpg" -OutputPath "C:\Photos\Ready" -SEOName "check valve 2 inch" -SEOPrefix "jt-custom" -SEOSuffix "transparent"
     Produces: jt-custom-check-valve-2-inch-transparent.png
 
 .EXAMPLE
-    .\Remove-ImageBackground.ps1 -InputPath "C:\Photos\Products" -OutputPath "C:\Photos\Ready" -SEOMappingFile "C:\Photos\seo-names.csv"
+    .\Process-ProductPics.ps1 -InputPath "C:\Photos\Products" -OutputPath "C:\Photos\Ready" -SEOMappingFile "C:\Photos\seo-names.csv"
     Batch processes using a CSV mapping file for SEO names.
 
 .EXAMPLE
-    .\Remove-ImageBackground.ps1 -InputPath "C:\Photos\Products" -OutputPath "C:\Photos\Ready" -SpillColor "blue" -SpillStrength 0.9
+    .\Process-ProductPics.ps1 -InputPath "C:\Photos\Products" -OutputPath "C:\Photos\Ready" -SpillColor "blue" -SpillStrength 0.9
     Processes with blue screen spill removal at 90% strength.
 
 .EXAMPLE
-    .\Remove-ImageBackground.ps1 -InputPath "C:\Photos\Products" -OutputPath "C:\Photos\Ready" -Brightness 1.08 -Contrast 1.10 -Shadows 25
+    .\Process-ProductPics.ps1 -InputPath "C:\Photos\Products" -OutputPath "C:\Photos\Ready" -Brightness 1.08 -Contrast 1.10 -Shadows 25
     Custom brightness/contrast/shadow values for darker product photos.
 
 .EXAMPLE
-    .\Remove-ImageBackground.ps1 -InputPath "C:\Photos\Incoming" -OutputPath "C:\Photos\Ready" -Watch
+    .\Process-ProductPics.ps1 -InputPath "C:\Photos\Incoming" -OutputPath "C:\Photos\Ready" -Watch
     Watches the Incoming folder and automatically processes new images with
     default post-processing and green spill removal.
 
 .EXAMPLE
-    .\Remove-ImageBackground.ps1 -InstallRembg
-    Installs rembg, Pillow, NumPy, and required dependencies using pip.
+    .\Process-ProductPics.ps1 -InstallRembg
+    Installs rembg, Pillow, NumPy, SciPy, and required dependencies using pip.
 
 .NOTES
     Author: John O'Neill Sr.
     Company: Azure Innovators
     GitHub: https://github.com/JONeillSr/
     Create Date: 12/14/2024
-    Version: 2.0.0
-    Change Date: 05/02/2026
-    Change Purpose: Added post-processing, spill removal, and SEO naming
+    Version: 2.1.0
+    Change Date: 05/07/2026
+    Change Purpose: Advanced 4-pass spill removal for dark products, edge-proximity
+                    weighting, solid-background detection, SciPy dependency
 
     Requirements:
     - Python 3.10 or higher
@@ -154,6 +195,7 @@
     - rembg Python package (can be installed via -InstallRembg parameter)
     - Pillow Python package (installed automatically with -InstallRembg)
     - NumPy Python package (installed automatically with -InstallRembg)
+    - SciPy Python package (installed automatically with -InstallRembg)
     - postprocess_image.py companion script (must be in same directory as this script)
 
     Supported image formats: JPG, JPEG, PNG, WEBP, BMP, TIFF
@@ -173,6 +215,27 @@
     - Avoid special characters, underscores, and spaces
 
 .CHANGELOG
+    Version 2.1.0 - 05/07/2026
+    - Rewrote spill removal with 4-pass approach for dark products (rubber, black
+      plastic, dark metal) where v2.0 single-pass missed subtle green fringe
+    - Pass 1: Absolute excess detection with lowered threshold (10 -> 2)
+    - Pass 2: Ratio-based detection for dark pixels (max channel < 80)
+    - Pass 3: Edge desaturation within 16px of product boundary
+    - Pass 4: Hard edge clamp for stubborn fringe at outermost boundary pixels
+    - Added edge-proximity weighting via SciPy binary erosion so corrections are
+      strongest at product edges where spill concentrates
+    - Added automatic detection of solid-background vs transparent images — spill
+      removal now works correctly whether background is transparent or solid black
+    - Added standalone SEO rename mode via -RenameCSV parameter with 3-column CSV
+      format (SourceFileName, SEOFileName, AltText) for renaming without processing
+    - Added -EmbedAltText switch to embed alt text as PNG tEXt metadata (Alt,
+      Description, Comment chunks) for accessibility and image search SEO
+    - Added -RenameInputPath and -RenameOutputPath parameters for rename mode
+    - Added SciPy to dependency installation (-InstallRembg) and prerequisite checks
+    - Added Pillow 14 forward compatibility (get_flattened_data with getdata fallback)
+    - Refactored spill correction into generic channel-based function supporting
+      green, blue, and red with identical multi-pass logic
+
     Version 2.0.0 - 05/02/2026
     - Added post-processing pipeline with brightness, contrast, and shadow adjustment
     - Added green/blue/red screen color spill removal
@@ -292,6 +355,21 @@ param(
 
     [Parameter(ParameterSetName = 'Process')]
     [string]$SEOMappingFile,
+
+    [Parameter(ParameterSetName = 'Rename', Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$RenameCSV,
+
+    [Parameter(ParameterSetName = 'Rename', Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$RenameInputPath,
+
+    [Parameter(ParameterSetName = 'Rename')]
+    [ValidateNotNullOrEmpty()]
+    [string]$RenameOutputPath,
+
+    [Parameter(ParameterSetName = 'Rename')]
+    [switch]$EmbedAltText,
 
     [Parameter(ParameterSetName = 'Process')]
     [Parameter(ParameterSetName = 'Watch')]
@@ -551,10 +629,10 @@ function Test-RembgInstalled {
 function Test-PillowInstalled {
     <#
     .SYNOPSIS
-        Checks if Pillow and NumPy are installed for post-processing.
+        Checks if Pillow, NumPy, and SciPy are installed for post-processing.
     #>
     try {
-        $result = & python -c "import PIL; import numpy; print('OK')" 2>&1
+        $result = & python -c "import PIL; import numpy; import scipy; print('OK')" 2>&1
         return ($result -eq 'OK')
     }
     catch {
@@ -567,7 +645,7 @@ function Install-Rembg {
     .SYNOPSIS
         Installs rembg, Pillow, NumPy using pip.
     #>
-    Write-LogMessage "Installing rembg with CPU support, CLI, Pillow, and NumPy..." -Level Info
+    Write-LogMessage "Installing rembg with CPU support, CLI, Pillow, NumPy, and SciPy..." -Level Info
 
     try {
         Write-LogMessage "Upgrading pip..." -Level Info
@@ -583,16 +661,16 @@ function Install-Rembg {
 
         Write-LogMessage "rembg installed successfully!" -Level Success
 
-        Write-LogMessage "Installing Pillow and NumPy for post-processing..." -Level Info
-        $pillowOutput = & pip install Pillow numpy 2>&1
+        Write-LogMessage "Installing Pillow, NumPy, and SciPy for post-processing..." -Level Info
+        $pillowOutput = & pip install Pillow numpy scipy 2>&1
 
         if ($LASTEXITCODE -ne 0) {
-            Write-LogMessage "Failed to install Pillow/NumPy: $pillowOutput" -Level Error
+            Write-LogMessage "Failed to install Pillow/NumPy/SciPy: $pillowOutput" -Level Error
             Write-LogMessage "Post-processing will not be available. Use -NoPostProcess to skip." -Level Warning
             return $true
         }
 
-        Write-LogMessage "Pillow and NumPy installed successfully!" -Level Success
+        Write-LogMessage "Pillow, NumPy, and SciPy installed successfully!" -Level Success
         Write-LogMessage "Note: The AI model will download automatically on first use." -Level Info
         return $true
     }
@@ -630,7 +708,7 @@ function Initialize-PostProcessing {
 
     if (-not (Test-PillowInstalled)) {
         Write-LogMessage "Pillow and/or NumPy not installed. Run with -InstallRembg to install dependencies." -Level Error
-        Write-LogMessage "Or install manually: pip install Pillow numpy" -Level Info
+        Write-LogMessage "Or install manually: pip install Pillow numpy scipy" -Level Info
         return $false
     }
 
@@ -972,7 +1050,7 @@ function Remove-ImageBackgroundSingle {
     }
 }
 
-function Invoke-ImageFile {
+function Process-ImageFile {
     <#
     .SYNOPSIS
         Full pipeline: background removal -> post-processing -> SEO naming.
@@ -1093,7 +1171,7 @@ function Invoke-ImageFile {
     }
 }
 
-function Invoke-ImageFolder {
+function Process-ImageFolder {
     <#
     .SYNOPSIS
         Processes all images in a folder.
@@ -1160,7 +1238,7 @@ function Invoke-ImageFolder {
             $relativePath = $imageFile.DirectoryName.Replace($InputFolder, "").TrimStart('\', '/')
         }
 
-        Invoke-ImageFile -InputFile $imageFile.FullName `
+        Process-ImageFile -InputFile $imageFile.FullName `
             -OutputFolder $OutputFolder `
             -RelativePath $relativePath `
             -ModelName $ModelName `
@@ -1373,7 +1451,7 @@ function Start-ImageWatcher {
             Write-LogMessage "Processing $($existingImages.Count) existing image(s)..." -Level Info
 
             foreach ($image in $existingImages) {
-                Invoke-ImageFile -InputFile $image.FullName `
+                Process-ImageFile -InputFile $image.FullName `
                     -OutputFolder $OutputFolder `
                     -ModelName $ModelName `
                     -UseAlphaMatting:$UseAlphaMatting
@@ -1467,6 +1545,240 @@ function Show-Summary {
     Add-Content -Path $script:LogFile -Value $logSummary -Encoding UTF8
 }
 
+function Invoke-SEORename {
+    <#
+    .SYNOPSIS
+        Standalone SEO rename mode. Reads a CSV mapping file and renames
+        images with SEO-friendly filenames, optionally embedding alt text
+        as PNG tEXt metadata.
+    .DESCRIPTION
+        CSV format: SourceFileName,SEOFileName,AltText
+        Example: IMG_0001.png,check-valve-2-inch-abs-transparent.png,2 inch ABS check valve for plumbing
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CSVPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$InputFolder,
+
+        [Parameter()]
+        [string]$OutputFolder,
+
+        [Parameter()]
+        [switch]$DoEmbedAltText
+    )
+
+    # Validate CSV exists
+    if (-not (Test-Path $CSVPath)) {
+        Write-Host "[Error] CSV file not found: $CSVPath" -ForegroundColor Red
+        exit 1
+    }
+
+    # Validate input folder exists
+    if (-not (Test-Path $InputFolder -PathType Container)) {
+        Write-Host "[Error] Input folder not found: $InputFolder" -ForegroundColor Red
+        exit 1
+    }
+
+    # Default output to a subfolder of input
+    if ([string]::IsNullOrEmpty($OutputFolder)) {
+        $OutputFolder = Join-Path $InputFolder "SEO-Renamed"
+    }
+
+    # Create output folder
+    if (-not (Test-Path $OutputFolder)) {
+        New-Item -ItemType Directory -Path $OutputFolder -Force | Out-Null
+    }
+
+    Write-Host ""
+    Write-Host "=" * 60 -ForegroundColor Cyan
+    Write-Host "  Azure Innovators - SEO Rename Mode" -ForegroundColor White
+    Write-Host "=" * 60 -ForegroundColor Cyan
+    Write-Host ""
+
+    # Import CSV
+    try {
+        $mappings = Import-Csv -Path $CSVPath -Encoding UTF8
+    }
+    catch {
+        Write-Host "[Error] Failed to read CSV: $_" -ForegroundColor Red
+        exit 1
+    }
+
+    # Validate required columns
+    $csvColumns = $mappings[0].PSObject.Properties.Name
+    $requiredColumns = @('SourceFileName', 'SEOFileName')
+    foreach ($col in $requiredColumns) {
+        if ($col -notin $csvColumns) {
+            Write-Host "[Error] CSV missing required column: $col" -ForegroundColor Red
+            Write-Host "Required columns: SourceFileName, SEOFileName" -ForegroundColor Yellow
+            Write-Host "Optional columns: AltText" -ForegroundColor Yellow
+            exit 1
+        }
+    }
+
+    $hasAltText = 'AltText' -in $csvColumns
+
+    if ($DoEmbedAltText -and -not $hasAltText) {
+        Write-Host "[Warning] -EmbedAltText specified but CSV has no AltText column. Skipping alt text embedding." -ForegroundColor Yellow
+        $DoEmbedAltText = $false
+    }
+
+    if ($DoEmbedAltText) {
+        # Verify Python and Pillow are available for alt text embedding
+        try {
+            $result = & python -c "import PIL; print('OK')" 2>&1
+            if ($result -ne 'OK') {
+                Write-Host "[Warning] Pillow not available. Alt text embedding requires Pillow. Skipping." -ForegroundColor Yellow
+                $DoEmbedAltText = $false
+            }
+        }
+        catch {
+            Write-Host "[Warning] Python not available. Alt text embedding requires Python + Pillow. Skipping." -ForegroundColor Yellow
+            $DoEmbedAltText = $false
+        }
+    }
+
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    Write-Host "[$timestamp] [Info] CSV: $CSVPath ($($mappings.Count) entries)" -ForegroundColor Cyan
+    Write-Host "[$timestamp] [Info] Input: $InputFolder" -ForegroundColor Cyan
+    Write-Host "[$timestamp] [Info] Output: $OutputFolder" -ForegroundColor Cyan
+    if ($DoEmbedAltText) {
+        Write-Host "[$timestamp] [Info] Alt text embedding: Enabled" -ForegroundColor Cyan
+    }
+    Write-Host ""
+
+    $renamed = 0
+    $skipped = 0
+    $errors = 0
+    $results = [System.Collections.ArrayList]::new()
+
+    foreach ($mapping in $mappings) {
+        $sourceName = $mapping.SourceFileName.Trim()
+        $seoName = $mapping.SEOFileName.Trim()
+        $altText = if ($hasAltText) { $mapping.AltText.Trim() } else { "" }
+
+        # Sanitize SEO filename
+        $seoName = $seoName.ToLower()
+        $seoName = $seoName -replace '[\s_]+', '-'
+        $seoName = $seoName -replace '[^a-z0-9\-\.]', ''
+        $seoName = $seoName -replace '-{2,}', '-'
+        $seoName = $seoName.Trim('-')
+
+        # Ensure it has an extension
+        if (-not [System.IO.Path]::HasExtension($seoName)) {
+            $sourceExt = [System.IO.Path]::GetExtension($sourceName)
+            $seoName = "$seoName$sourceExt"
+        }
+
+        $sourcePath = Join-Path $InputFolder $sourceName
+        $destPath = Join-Path $OutputFolder $seoName
+
+        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+
+        if (-not (Test-Path $sourcePath)) {
+            Write-Host "[$timestamp] [Warning] Source not found: $sourceName" -ForegroundColor Yellow
+            $skipped++
+            $null = $results.Add([PSCustomObject]@{
+                SourceFileName = $sourceName
+                SEOFileName    = $seoName
+                AltText        = $altText
+                Status         = "Skipped"
+                Reason         = "Source file not found"
+            })
+            continue
+        }
+
+        if (Test-Path $destPath) {
+            Write-Host "[$timestamp] [Warning] Destination exists, skipping: $seoName" -ForegroundColor Yellow
+            $skipped++
+            $null = $results.Add([PSCustomObject]@{
+                SourceFileName = $sourceName
+                SEOFileName    = $seoName
+                AltText        = $altText
+                Status         = "Skipped"
+                Reason         = "Destination file already exists"
+            })
+            continue
+        }
+
+        try {
+            # Copy with new name
+            Copy-Item -Path $sourcePath -Destination $destPath -Force
+
+            # Embed alt text as PNG tEXt chunk if requested
+            $altStatus = ""
+            if ($DoEmbedAltText -and $altText -and
+                [System.IO.Path]::GetExtension($destPath).ToLower() -eq '.png') {
+
+                $escapedPath = $destPath -replace "'", "''"
+                $escapedAlt = $altText -replace "'", "''"
+                $pyCode = @(
+                    "from PIL import Image"
+                    "from PIL.PngImagePlugin import PngInfo"
+                    "img = Image.open('$escapedPath')"
+                    "meta = PngInfo()"
+                    "meta.add_text('Alt', '$escapedAlt')"
+                    "meta.add_text('Description', '$escapedAlt')"
+                    "meta.add_text('Comment', '$escapedAlt')"
+                    "img.save('$escapedPath', pnginfo=meta)"
+                ) -join "; "
+
+                $pyResult = & python -c $pyCode 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    $altStatus = " [Alt: embedded]"
+                }
+                else {
+                    $altStatus = " [Alt: failed]"
+                }
+            }
+
+            Write-Host "[$timestamp] [Success] $sourceName -> $seoName$altStatus" -ForegroundColor Green
+            $renamed++
+            $null = $results.Add([PSCustomObject]@{
+                SourceFileName = $sourceName
+                SEOFileName    = $seoName
+                AltText        = $altText
+                Status         = "Renamed"
+                Reason         = ""
+            })
+        }
+        catch {
+            Write-Host "[$timestamp] [Error] Failed: $sourceName -> $seoName ($_)" -ForegroundColor Red
+            $errors++
+            $null = $results.Add([PSCustomObject]@{
+                SourceFileName = $sourceName
+                SEOFileName    = $seoName
+                AltText        = $altText
+                Status         = "Failed"
+                Reason         = $_.ToString()
+            })
+        }
+    }
+
+    # Export report
+    $reportPath = Join-Path $OutputFolder "SEO-Rename-Report.csv"
+    try {
+        $results | Export-Csv -Path $reportPath -NoTypeInformation -Encoding UTF8
+    }
+    catch {
+        Write-Host "[Warning] Failed to save report: $_" -ForegroundColor Yellow
+    }
+
+    # Summary
+    Write-Host ""
+    Write-Host "=" * 60 -ForegroundColor Cyan
+    Write-Host "  Rename Complete!" -ForegroundColor Green
+    Write-Host "  Renamed:  $renamed" -ForegroundColor Green
+    Write-Host "  Skipped:  $skipped" -ForegroundColor Yellow
+    $errorColor = if ($errors -gt 0) { 'Red' } else { 'Green' }
+    Write-Host "  Errors:   $errors" -ForegroundColor $errorColor
+    Write-Host "  Output:   $OutputFolder" -ForegroundColor Gray
+    Write-Host "  Report:   $reportPath" -ForegroundColor Gray
+    Write-Host "=" * 60 -ForegroundColor Cyan
+}
+
 #endregion
 
 #region Main Execution
@@ -1475,7 +1787,7 @@ function Show-Summary {
 if ($InstallRembg) {
     Write-Host ""
     Write-Host "=" * 60 -ForegroundColor Cyan
-    Write-Host "  Azure Innovators - Background Remover Setup v2.0" -ForegroundColor White
+    Write-Host "  Azure Innovators - Background Remover Setup v2.1" -ForegroundColor White
     Write-Host "=" * 60 -ForegroundColor Cyan
     Write-Host ""
 
@@ -1491,28 +1803,45 @@ if ($InstallRembg) {
         Write-Host ""
         Write-Host "Examples:" -ForegroundColor Cyan
         Write-Host "  # Basic processing with post-processing" -ForegroundColor Gray
-        Write-Host "  .\Remove-ImageBackground.ps1 -InputPath 'C:\Photos' -OutputPath 'C:\Processed'" -ForegroundColor White
+        Write-Host "  .\Process-ProductPics.ps1 -InputPath 'C:\Photos' -OutputPath 'C:\Processed'" -ForegroundColor White
         Write-Host ""
         Write-Host "  # With SEO naming for e-commerce" -ForegroundColor Gray
-        Write-Host "  .\Remove-ImageBackground.ps1 -InputPath 'C:\Photos\valve.jpg' -OutputPath 'C:\Ready' -SEOName 'check valve 2 inch' -SEOPrefix 'jt-custom'" -ForegroundColor White
+        Write-Host "  .\Process-ProductPics.ps1 -InputPath 'C:\Photos\valve.jpg' -OutputPath 'C:\Ready' -SEOName 'check valve 2 inch' -SEOPrefix 'jt-custom'" -ForegroundColor White
         Write-Host ""
         Write-Host "  # Watch mode with blue screen" -ForegroundColor Gray
-        Write-Host "  .\Remove-ImageBackground.ps1 -InputPath 'C:\Watch' -OutputPath 'C:\Ready' -Watch -SpillColor blue" -ForegroundColor White
+        Write-Host "  .\Process-ProductPics.ps1 -InputPath 'C:\Watch' -OutputPath 'C:\Ready' -Watch -SpillColor blue" -ForegroundColor White
     }
+    exit 0
+}
+
+# Handle rename mode
+if ($RenameCSV) {
+    $RenameInputPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($RenameInputPath)
+    $RenameCSV = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($RenameCSV)
+
+    $renameOutPath = if ($RenameOutputPath) {
+        $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($RenameOutputPath)
+    }
+    else { "" }
+
+    Invoke-SEORename -CSVPath $RenameCSV `
+        -InputFolder $RenameInputPath `
+        -OutputFolder $renameOutPath `
+        -DoEmbedAltText:$EmbedAltText
     exit 0
 }
 
 # Validate rembg is installed
 if (-not (Test-RembgInstalled)) {
     Write-LogMessage "rembg is not installed. Run with -InstallRembg to install it." -Level Error
-    Write-Host "  .\Remove-ImageBackground.ps1 -InstallRembg" -ForegroundColor Yellow
+    Write-Host "  .\Process-ProductPics.ps1 -InstallRembg" -ForegroundColor Yellow
     exit 1
 }
 
 # Display header
 Write-Host ""
 Write-Host "=" * 60 -ForegroundColor Cyan
-Write-Host "  Azure Innovators - AI Background Remover v2.0" -ForegroundColor White
+Write-Host "  Azure Innovators - AI Background Remover v2.1" -ForegroundColor White
 Write-Host "  Powered by rembg + Pillow post-processing" -ForegroundColor Gray
 Write-Host "=" * 60 -ForegroundColor Cyan
 Write-Host ""
@@ -1572,7 +1901,7 @@ elseif (Test-Path $InputPath -PathType Leaf) {
         New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
     }
 
-    Invoke-ImageFile -InputFile $InputPath `
+    Process-ImageFile -InputFile $InputPath `
         -OutputFolder $OutputPath `
         -ModelName $Model `
         -UseAlphaMatting:$AlphaMatting
@@ -1582,7 +1911,7 @@ elseif (Test-Path $InputPath -PathType Leaf) {
 }
 # Handle folder
 else {
-    Invoke-ImageFolder -InputFolder $InputPath `
+    Process-ImageFolder -InputFolder $InputPath `
         -OutputFolder $OutputPath `
         -ModelName $Model `
         -UseAlphaMatting:$AlphaMatting `

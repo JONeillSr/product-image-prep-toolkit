@@ -65,83 +65,219 @@ def adjust_shadows(img_array, shadow_amount):
     return result.astype(np.uint8)
 
 
+def _detect_edge_proximity(alpha, rgb=None):
+    """
+    Create a weight map where pixels near the product boundary get higher
+    weights. Spill is always worst at edges where the product meets the
+    removed background.
+
+    Handles two scenarios:
+    1. Transparent background (alpha varies): edges are alpha boundaries
+    2. Solid black background (alpha=255 everywhere): edges are the
+       transition from near-black to non-black pixels
+
+    Returns a float64 array (0.0 to 1.0) where 1.0 = on the edge,
+    tapering to 0.3 deep inside the product.
+    """
+    from scipy import ndimage
+
+    # Determine if we have real alpha variation or solid alpha
+    alpha_range = alpha.max() - alpha.min()
+
+    if alpha_range > 10:
+        # Scenario 1: Real transparency — use alpha boundary
+        binary_mask = alpha > 128
+    else:
+        # Scenario 2: Solid background (no transparency)
+        # Build mask from pixel luminance: "product" = non-black pixels
+        if rgb is not None:
+            luminance = 0.299 * rgb[:, :, 0] + 0.587 * rgb[:, :, 1] + 0.114 * rgb[:, :, 2]
+            binary_mask = luminance > 8  # product pixels
+        else:
+            # Can't detect edges without RGB data, use uniform weight
+            return np.where(alpha > 0, 0.8, 0.0)
+
+    # Erode by different amounts to create distance bands from edge
+    eroded_4 = ndimage.binary_erosion(binary_mask, iterations=4)
+    eroded_8 = ndimage.binary_erosion(binary_mask, iterations=8)
+    eroded_16 = ndimage.binary_erosion(binary_mask, iterations=16)
+
+    weight = np.ones_like(alpha, dtype=np.float64) * 0.3  # base interior weight
+    weight[~eroded_16] = 0.5   # within 16px of edge
+    weight[~eroded_8] = 0.75   # within 8px of edge
+    weight[~eroded_4] = 1.0    # within 4px of edge (strongest)
+    weight[~binary_mask] = 0.0 # background = skip
+
+    return weight
+
+
+def _apply_spill_correction(result, spill_ch, other_ch1, other_ch2,
+                            visible, edge_weight, strength):
+    """
+    Generic spill correction for any single-channel spill color.
+    Uses three detection passes:
+      Pass 1: Absolute excess (spill channel > max of others by threshold)
+      Pass 2: Ratio-based (spill channel is proportionally dominant, even
+              if absolute difference is tiny — catches dark product edges)
+      Pass 3: Edge desaturation (any remaining color cast near alpha edges
+              gets desaturated toward neutral gray)
+    """
+    s = result[:, :, spill_ch].copy()
+    o1 = result[:, :, other_ch1].copy()
+    o2 = result[:, :, other_ch2].copy()
+    max_other = np.maximum(o1, o2)
+
+    # ── Pass 1: Absolute excess detection (original approach, lower threshold) ──
+    spill_excess = s - max_other
+    # Threshold of 2 catches subtle spill on dark products that the old
+    # threshold of 10 missed entirely
+    pass1_mask = (spill_excess > 2) & visible
+
+    if np.any(pass1_mask):
+        max_rgb = np.maximum(np.maximum(s, o1), o2)
+        max_rgb = np.where(max_rgb == 0, 1, max_rgb)
+        spill_ratio = spill_excess / max_rgb
+        spill_ratio = np.clip(spill_ratio, 0, 1)
+
+        # Combine ratio with edge proximity for correction strength
+        correction = spill_ratio * strength * edge_weight
+        result[:, :, spill_ch][pass1_mask] = np.clip(
+            s[pass1_mask] - (spill_excess[pass1_mask] * correction[pass1_mask]),
+            0, 255
+        )
+        # Warm compensation on the weaker of the two other channels
+        weaker_ch = other_ch1 if np.mean(o1[pass1_mask]) < np.mean(o2[pass1_mask]) else other_ch2
+        result[:, :, weaker_ch][pass1_mask] = np.clip(
+            result[:, :, weaker_ch][pass1_mask] + (spill_excess[pass1_mask] * correction[pass1_mask] * 0.08),
+            0, 255
+        )
+
+    # Refresh channels after pass 1
+    s = result[:, :, spill_ch].copy()
+    o1 = result[:, :, other_ch1].copy()
+    o2 = result[:, :, other_ch2].copy()
+    max_other = np.maximum(o1, o2)
+
+    # ── Pass 2: Ratio-based detection for dark pixels ──
+    # On dark products (max channel < 80), even 1-2 levels of green excess
+    # is visually obvious. Use proportional detection instead of absolute.
+    max_rgb = np.maximum(np.maximum(s, o1), o2)
+    is_dark = max_rgb < 80
+    # Spill channel is at least 5% higher than the max of the other two
+    ratio_excess = np.where(max_other > 0, (s - max_other) / np.maximum(max_other, 1), 0)
+    pass2_mask = (ratio_excess > 0.05) & is_dark & visible & (s > max_other)
+
+    if np.any(pass2_mask):
+        # For dark pixels, just equalize the spill channel down to max_other
+        correction_factor = strength * edge_weight
+        target = max_other[pass2_mask]
+        current = s[pass2_mask]
+        result[:, :, spill_ch][pass2_mask] = np.clip(
+            current - ((current - target) * correction_factor[pass2_mask]),
+            0, 255
+        )
+
+    # Refresh channels after pass 2
+    s = result[:, :, spill_ch].copy()
+    o1 = result[:, :, other_ch1].copy()
+    o2 = result[:, :, other_ch2].copy()
+
+    # ── Pass 3: Edge desaturation ──
+    # Near product edges, desaturate any remaining color cast toward neutral.
+    # This catches the faintest residual tint that passes 1 and 2 miss.
+    # Use a broader zone and stronger correction than interior.
+    edge_zone = edge_weight > 0.45  # within ~16px of product boundary
+    still_tinted = (s > np.maximum(o1, o2)) & edge_zone & visible
+
+    if np.any(still_tinted):
+        # Calculate per-pixel gray value
+        gray = (s + o1 + o2) / 3.0
+        # Stronger desaturation at edges — scale with edge_weight
+        desat_strength = strength * 0.7 * edge_weight
+        for ch in [spill_ch, other_ch1, other_ch2]:
+            current = result[:, :, ch].copy()
+            result[:, :, ch][still_tinted] = np.clip(
+                current[still_tinted] + (gray[still_tinted] - current[still_tinted]) * desat_strength[still_tinted],
+                0, 255
+            )
+
+    # ── Pass 4: Hard edge clamp ──
+    # For pixels right at the product boundary (weight=1.0), if the spill
+    # channel STILL exceeds the average of the other two channels, force
+    # it down. This is the nuclear option for stubborn fringe on dark products.
+    s_final = result[:, :, spill_ch].copy()
+    o1_final = result[:, :, other_ch1].copy()
+    o2_final = result[:, :, other_ch2].copy()
+    avg_other = (o1_final + o2_final) / 2.0
+
+    hard_edge = edge_weight >= 0.95
+    still_spilling = (s_final > avg_other + 1) & hard_edge & visible
+
+    if np.any(still_spilling):
+        clamp_strength = strength * 0.9
+        result[:, :, spill_ch][still_spilling] = np.clip(
+            s_final[still_spilling] - ((s_final[still_spilling] - avg_other[still_spilling]) * clamp_strength),
+            0, 255
+        )
+
+    return result
+
+
 def remove_color_spill(img_array, spill_color="green", strength=0.85):
     """
     Remove color spill (fringing) from green/blue/red screen edges.
     This replicates the Canva technique of selecting the spill color and
     setting Hue, Saturation, and Brightness all to -100.
 
-    Works by detecting pixels with a dominant spill-color channel near
-    semi-transparent edges and desaturating/darkening the spill color.
+    Uses a three-pass approach:
+    1. Absolute excess: catches obvious spill (threshold lowered to 2 from 10
+       for dark products like rubber, black plastic, dark metal)
+    2. Ratio-based: catches subtle spill on dark pixels where absolute
+       differences are tiny but proportionally significant
+    3. Edge desaturation: kills any remaining color cast within ~8px of the
+       alpha boundary where spill is always concentrated
+
+    Edge proximity weighting ensures corrections are strongest at the
+    product outline (where spill lives) and gentler in the interior
+    (avoiding over-correction on legitimately colored surfaces).
     """
     if strength <= 0:
         return img_array
 
     result = img_array.copy().astype(np.float64)
     alpha = result[:, :, 3]
-
-    # Only process pixels that are visible (alpha > 0)
-    visible = alpha > 0
-
     rgb = result[:, :, :3]
-    r, g, b = rgb[:, :, 0], rgb[:, :, 1], rgb[:, :, 2]
 
-    if spill_color == "green":
-        # Detect green-dominant pixels
-        # Green spill: G channel is significantly higher than R and B
-        spill_excess = g - np.maximum(r, b)
-        spill_mask = (spill_excess > 10) & visible
+    # Determine visibility mask: handles both transparent and solid backgrounds
+    alpha_range = alpha.max() - alpha.min()
+    if alpha_range > 10:
+        # Real transparency — only process visible pixels
+        visible = alpha > 0
+    else:
+        # Solid background — "visible" means non-black product pixels
+        luminance = 0.299 * rgb[:, :, 0] + 0.587 * rgb[:, :, 1] + 0.114 * rgb[:, :, 2]
+        visible = luminance > 8
 
-        if np.any(spill_mask):
-            # Calculate how "green" each pixel is (0 to 1)
-            max_rgb = np.maximum(np.maximum(r, g), b)
-            max_rgb = np.where(max_rgb == 0, 1, max_rgb)  # avoid div by zero
-            green_ratio = spill_excess / max_rgb
-            green_ratio = np.clip(green_ratio, 0, 1)
+    # Build edge proximity weight map
+    try:
+        edge_weight = _detect_edge_proximity(alpha, rgb)
+    except ImportError:
+        # scipy not available — fall back to uniform weighting
+        edge_weight = np.where(visible, 0.8, 0.0)
 
-            # Apply correction: reduce green, boost red and blue slightly
-            correction = green_ratio * strength
-            result[:, :, 1][spill_mask] = np.clip(
-                g[spill_mask] - (spill_excess[spill_mask] * correction[spill_mask]),
-                0, 255
-            )
-            # Slight warmth compensation
-            result[:, :, 0][spill_mask] = np.clip(
-                r[spill_mask] + (spill_excess[spill_mask] * correction[spill_mask] * 0.1),
-                0, 255
-            )
+    # Channel indices: R=0, G=1, B=2
+    channel_map = {
+        "green": (1, 0, 2),  # spill=G, others=R,B
+        "blue":  (2, 0, 1),  # spill=B, others=R,G
+        "red":   (0, 1, 2),  # spill=R, others=G,B
+    }
 
-    elif spill_color == "blue":
-        spill_excess = b - np.maximum(r, g)
-        spill_mask = (spill_excess > 10) & visible
+    if spill_color not in channel_map:
+        return result.astype(np.uint8)
 
-        if np.any(spill_mask):
-            max_rgb = np.maximum(np.maximum(r, g), b)
-            max_rgb = np.where(max_rgb == 0, 1, max_rgb)
-            blue_ratio = spill_excess / max_rgb
-            blue_ratio = np.clip(blue_ratio, 0, 1)
-
-            correction = blue_ratio * strength
-            result[:, :, 2][spill_mask] = np.clip(
-                b[spill_mask] - (spill_excess[spill_mask] * correction[spill_mask]),
-                0, 255
-            )
-
-    elif spill_color == "red":
-        spill_excess = r - np.maximum(g, b)
-        spill_mask = (spill_excess > 10) & visible
-
-        if np.any(spill_mask):
-            max_rgb = np.maximum(np.maximum(r, g), b)
-            max_rgb = np.where(max_rgb == 0, 1, max_rgb)
-            red_ratio = spill_excess / max_rgb
-            red_ratio = np.clip(red_ratio, 0, 1)
-
-            correction = red_ratio * strength
-            result[:, :, 0][spill_mask] = np.clip(
-                r[spill_mask] - (spill_excess[spill_mask] * correction[spill_mask]),
-                0, 255
-            )
+    spill_ch, other1, other2 = channel_map[spill_color]
+    result = _apply_spill_correction(result, spill_ch, other1, other2,
+                                     visible, edge_weight, strength)
 
     return result.astype(np.uint8)
 
@@ -165,7 +301,11 @@ def strip_metadata(img):
     """
     # Create a brand-new image with only pixel data — no metadata carries over
     clean = Image.new(img.mode, img.size)
-    clean.putdata(list(img.getdata()))
+    try:
+        clean.putdata(list(img.get_flattened_data()))
+    except AttributeError:
+        # Pillow < 14 fallback
+        clean.putdata(list(img.getdata()))
     return clean
 
 

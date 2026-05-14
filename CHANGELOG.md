@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
+## [2.1.0] - 2026-05-07
+
+### Added
+
+- **4-pass spill removal** — Completely rewrote the color spill removal algorithm to handle dark products (rubber, black plastic, dark metal) where the v2.0 single-pass approach missed subtle green fringe:
+  - Pass 1: Absolute excess detection with lowered threshold (10 → 2) to catch spill on dark surfaces
+  - Pass 2: Ratio-based detection for dark pixels (max channel < 80) using proportional comparison instead of absolute differences
+  - Pass 3: Edge desaturation within 16px of the product boundary, blending remaining color cast toward neutral gray
+  - Pass 4: Hard edge clamp at outermost boundary pixels, forcing the spill channel down when it still exceeds the average of the other channels
+- **Edge-proximity weighting** — Uses SciPy binary erosion to build a distance map from product edges. Corrections are strongest at the product boundary (where spill concentrates) and taper to 30% strength in the interior, preventing over-correction on legitimately colored surfaces.
+- **Solid-background detection** — Spill removal now automatically detects whether the image has real transparency (alpha varies) or a solid background (alpha=255 everywhere with black background). Edge detection adapts accordingly using luminance-based product boundary detection as a fallback.
+- **SciPy dependency** — Added to `-InstallRembg` installation and prerequisite checks. Used for `ndimage.binary_erosion` in edge proximity calculations. Falls back to uniform weighting if SciPy is not available.
+- **Standalone SEO rename mode** — New `-RenameCSV` parameter enables copy-and-rename of existing images from a 3-column CSV (`SourceFileName`, `SEOFileName`, `AltText`) without any image processing. Useful for renaming already-processed images for e-commerce upload.
+- **Alt text embedding** — New `-EmbedAltText` switch writes alt text from the CSV as PNG tEXt metadata (Alt, Description, and Comment chunks) for accessibility and image search SEO. Requires Python and Pillow; only applies to `.png` files.
+- **Rename mode parameters** — `-RenameInputPath` (source folder) and `-RenameOutputPath` (destination folder, defaults to `SEO-Renamed` subfolder).
+- **Rename report** — Generates `SEO-Rename-Report.csv` in the output folder with per-file status (Renamed, Skipped, Failed) and reasons.
+- **Rename template** — `scripts/seo-rename-template.csv` included with example product entries.
+- **Pillow 14 forward compatibility** — Metadata stripping now uses `get_flattened_data()` with a fallback to the deprecated `getdata()` for older Pillow versions.
+
+### Changed
+
+- Spill correction refactored from three separate color-specific code paths into a single generic `_apply_spill_correction()` function that handles green, blue, and red identically via channel index mapping.
+- Dependency check (`Test-PillowInstalled`) now verifies SciPy alongside Pillow and NumPy.
+- Install messages updated to reflect SciPy as a required dependency.
+
+---
+
 ## [2.0.0] - 2026-05-02
 
 ### Added
@@ -86,6 +113,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Author:** John O'Neill Sr. — [Azure Innovators](https://www.azureinnovators.com)
 - **rembg:** [https://github.com/danielgatis/rembg](https://github.com/danielgatis/rembg)
 
+[2.1.0]: https://github.com/JONeillSr/product-image-prep-toolkit/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/JONeillSr/product-image-prep-toolkit/compare/v1.1.0...v2.0.0
 [1.1.0]: https://github.com/JONeillSr/product-image-prep-toolkit/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/JONeillSr/product-image-prep-toolkit/releases/tag/v1.0.0
